@@ -1,5 +1,7 @@
 ﻿using Microsoft.Win32;
 using NLog;
+using Microsoft.Win32;
+
 using Shadowsocks.Controller;
 using Shadowsocks.Controller.Hotkeys;
 using Shadowsocks.Util;
@@ -24,43 +26,20 @@ namespace Shadowsocks
         public static ShadowsocksController MainController { get; private set; }
         public static MenuViewController MenuController { get; private set; }
         public static string[] Args { get; private set; }
+
         /// <summary>
         /// 应用程序的主入口点。
         /// </summary>
-        /// </summary>
         [STAThread]
-        private static void Main(string[] args)
+        static void Main(string[] args)
         {
-            Directory.SetCurrentDirectory(Application.StartupPath);
             // todo: initialize the NLog configuartion
             Model.NLogConfig.TouchAndApplyNLogConfig();
 
-            // .NET Framework 4.7.2 on Win7 compatibility
-            ServicePointManager.SecurityProtocol |=
-                SecurityProtocolType.Tls | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls12;
-
             // store args for further use
             Args = args;
-            // Check OS since we are using dual-mode socket
-            if (!Utils.IsWinVistaOrHigher())
-            {
-                MessageBox.Show(I18N.GetString("Unsupported operating system, use Windows Vista at least."),
-                "Shadowsocks Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
 
-            // Check .NET Framework version
-            if (!Utils.IsSupportedRuntimeVersion())
-            {
-                if (DialogResult.OK == MessageBox.Show(I18N.GetString("Unsupported .NET Framework, please update to {0} or later.", "4.7.2"),
-                "Shadowsocks Error", MessageBoxButtons.OKCancel, MessageBoxIcon.Error))
-                {
-                    Process.Start("https://dotnet.microsoft.com/download/dotnet-framework/net472");
-                }
-                return;
-            }
             string pipename = $"Shadowsocks\\{Application.StartupPath.GetHashCode()}";
-
             string addedUrl = null;
 
             using (NamedPipeClientStream pipe = new NamedPipeClientStream(pipename))
@@ -75,7 +54,6 @@ namespace Shadowsocks
                 {
                     pipeExist = false;
                 }
-
                 // TODO: switch to better argv parser when it's getting complicate
                 List<string> alist = Args.ToList();
                 // check --open-url param
@@ -121,8 +99,6 @@ namespace Shadowsocks
                 }
             }
 
-            Utils.ReleaseMemory(true);
-
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             // handle UI exceptions
             Application.ThreadException += Application_ThreadException;
@@ -134,7 +110,9 @@ namespace Shadowsocks
             Application.SetCompatibleTextRenderingDefault(false);
             AutoStartup.RegisterForRestart(true);
 
-            Directory.SetCurrentDirectory(Application.StartupPath);
+            // See https://github.com/dotnet/runtime/issues/13051
+            // we have to do this for self-contained executables
+            Directory.SetCurrentDirectory(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName));
 
 #if DEBUG
             // truncate privoxy log file while debugging

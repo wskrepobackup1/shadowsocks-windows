@@ -10,7 +10,7 @@ using NLog;
 
 namespace Shadowsocks.Controller
 {
-    public class PACServer : Listener.Service
+    public class PACServer : StreamService
     {
         private static Logger logger = LogManager.GetCurrentClassLogger();
 
@@ -22,9 +22,7 @@ namespace Shadowsocks.Controller
             {
                 if (string.IsNullOrEmpty(_cachedPacSecret))
                 {
-                    var rd = new byte[32];
-                    RNG.GetBytes(rd);
-                    _cachedPacSecret = HttpServerUtility.UrlTokenEncode(rd);
+                    _cachedPacSecret = HttpServerUtilityUrlToken.Encode(RNG.GetBytes(32));
                 }
                 return _cachedPacSecret;
             }
@@ -51,9 +49,18 @@ namespace Shadowsocks.Controller
 
         private static string GetHash(string content)
         {
-            return HttpServerUtility.UrlTokenEncode(MbedTLS.MD5(Encoding.ASCII.GetBytes(content)));
+
+            return HttpServerUtilityUrlToken.Encode(CryptoUtils.MD5(Encoding.ASCII.GetBytes(content)));
         }
 
+        public override bool Handle(CachedNetworkStream stream, object state)
+        {
+            byte[] fp = new byte[256];
+            int len = stream.ReadFirstBlock(fp);
+            return Handle(fp, len, stream.Socket, state);
+        }
+
+        [Obsolete]
         public override bool Handle(byte[] firstPacket, int length, Socket socket, object state)
         {
             if (socket.ProtocolType != ProtocolType.Tcp)
@@ -155,8 +162,6 @@ namespace Shadowsocks.Controller
             }
         }
 
-
-
         public void SendResponse(Socket socket, bool useSocks)
         {
             try
@@ -176,7 +181,6 @@ Connection: Close
 ";
                 byte[] response = Encoding.UTF8.GetBytes(responseHead + pacContent);
                 socket.BeginSend(response, 0, response.Length, 0, new AsyncCallback(SendCallback), socket);
-                Utils.ReleaseMemory(true);
             }
             catch (Exception e)
             {
@@ -195,7 +199,6 @@ Connection: Close
             catch
             { }
         }
-
 
         private string GetPACAddress(IPEndPoint localEndPoint, bool useSocks)
         {

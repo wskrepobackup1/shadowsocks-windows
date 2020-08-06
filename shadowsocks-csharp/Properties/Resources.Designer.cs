@@ -116,16 +116,6 @@ namespace Shadowsocks.Properties {
         }
         
         /// <summary>
-        ///   查找 System.Byte[] 类型的本地化资源。
-        /// </summary>
-        internal static byte[] libsscrypto_dll {
-            get {
-                object obj = ResourceManager.GetObject("libsscrypto_dll", resourceCulture);
-                return ((byte[])(obj));
-            }
-        }
-        
-        /// <summary>
         ///   查找类似 &lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;
         ///&lt;!-- Warning: Configuration may reset after shadowsocks upgrade. --&gt;
         ///&lt;!-- If you messed it up, delete this file and Shadowsocks will create a new one. --&gt;

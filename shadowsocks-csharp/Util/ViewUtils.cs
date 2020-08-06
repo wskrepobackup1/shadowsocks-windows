@@ -1,4 +1,5 @@
 ﻿using Shadowsocks.Controller;
+using Shadowsocks.View;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -22,15 +23,25 @@ namespace Shadowsocks.Util
             return children.SelectMany(GetChildControls<TControl>).Concat(children);
         }
 
-        public static IEnumerable<MenuItem> GetMenuItems(Menu m)
+        public static IEnumerable<ToolStripMenuItem> GetToolStripMenuItems(MenuStrip m)
         {
-            if (m?.MenuItems == null || m.MenuItems.Count == 0) return Enumerable.Empty<MenuItem>();
-            var children = new List<MenuItem>();
-            foreach (var item in m.MenuItems)
+            if (m?.Items   == null || m.Items.Count == 0) return Enumerable.Empty<ToolStripMenuItem>();
+            var children = new List<ToolStripMenuItem>();
+            foreach (var item in m.Items)
             {
-                children.Add((MenuItem)item);
+                children.Add((ToolStripMenuItem)item);
             }
-            return children.SelectMany(GetMenuItems).Concat(children);
+            return children.SelectMany(GetToolStripMenuItems).Concat(children);
+        }
+        public static IEnumerable<ToolStripMenuItem> GetToolStripMenuItems(ToolStripMenuItem m)
+        {
+            if (m?.DropDownItems == null || m.DropDownItems.Count == 0) return Enumerable.Empty<ToolStripMenuItem>();
+            var children = new List<ToolStripMenuItem>();
+            foreach (var item in m.DropDownItems)
+            {
+                children.Add((ToolStripMenuItem)item);
+            }
+            return children.SelectMany(GetToolStripMenuItems).Concat(children);
         }
 
         // Workaround NotifyIcon's 63 chars limit
@@ -105,6 +116,22 @@ namespace Shadowsocks.Util
             int dpi = (int)graphics.DpiX;
             graphics.Dispose();
             return dpi;
+        }
+
+        public static string InputBox(string Prompt, string Title = "", string DefaultResponse = "", int XPos = -1, int YPos = -1)
+        {
+            var result = DefaultResponse;
+            var box = new InputBox()
+            {
+                Prompt = Prompt,
+                Text = Title ?? "Input",
+                Response = DefaultResponse
+            };
+            if (box.ShowDialog()== DialogResult.OK)
+            {
+                result = box.Response;
+            }
+            return result;
         }
     }
 }

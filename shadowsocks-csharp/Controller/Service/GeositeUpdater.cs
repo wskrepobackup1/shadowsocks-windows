@@ -35,7 +35,7 @@ namespace Shadowsocks.Controller
 
         private static readonly string DATABASE_PATH = Utils.GetTempPath("dlc.dat");
 
-        private static HttpClientHandler httpClientHandler;
+        private static SocketsHttpHandler socketsHttpHandler;
         private static HttpClient httpClient;
         private static readonly string GEOSITE_URL = "https://github.com/v2fly/domain-list-community/raw/release/dlc.dat";
         private static readonly string GEOSITE_SHA256SUM_URL = "https://github.com/v2fly/domain-list-community/raw/release/dlc.dat.sha256sum";
@@ -97,11 +97,12 @@ namespace Shadowsocks.Controller
             // use System.Net.Http.HttpClient to download GeoSite db.
             // NASTY workaround: new HttpClient every update
             // because we can't change proxy on existing socketsHttpHandler instance
-            httpClientHandler = new HttpClientHandler();
-            httpClient = new HttpClient(httpClientHandler);
+            socketsHttpHandler = new SocketsHttpHandler();
+            httpClient = new HttpClient(socketsHttpHandler);
             if (config.enabled)
             {
-                httpClientHandler.Proxy = new WebProxy(
+                socketsHttpHandler.UseProxy = true;
+                socketsHttpHandler.Proxy = new WebProxy(
                     config.isIPv6Enabled
                     ? $"[{IPAddress.IPv6Loopback}]"
                     : IPAddress.Loopback.ToString(),
@@ -158,10 +159,10 @@ namespace Shadowsocks.Controller
             }
             finally
             {
-                if (httpClientHandler != null)
+                if (socketsHttpHandler != null)
                 {
-                    httpClientHandler.Dispose();
-                    httpClientHandler = null;
+                    socketsHttpHandler.Dispose();
+                    socketsHttpHandler = null;
                 }
                 if (httpClient != null)
                 {

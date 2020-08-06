@@ -19,7 +19,7 @@ using static Shadowsocks.Encryption.EncryptorBase;
 
 namespace Shadowsocks.Controller
 {
-    internal class TCPRelay : Listener.Service
+    class TCPRelay : StreamService
     {
         public event EventHandler<SSTCPConnectedEventArgs> OnConnected;
         public event EventHandler<SSTransmitEventArgs> OnInbound;
@@ -41,6 +41,54 @@ namespace Shadowsocks.Controller
             _lastSweepTime = DateTime.Now;
         }
 
+        public override bool Handle(CachedNetworkStream stream, object state)
+        {
+            
+            byte[] fp = new byte[256];
+            int len = stream.ReadFirstBlock(fp);
+            
+            var socket = stream.Socket;
+            if (socket.ProtocolType != ProtocolType.Tcp
+                || (len < 2 || fp[0] != 5))
+                return false;
+
+            
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
+
+            TCPHandler handler = new TCPHandler(_controller, _config, socket);
+
+            IList<TCPHandler> handlersToClose = new List<TCPHandler>();
+            lock (Handlers)
+            {
+                Handlers.Add(handler);
+                DateTime now = DateTime.Now;
+                if (now - _lastSweepTime > TimeSpan.FromSeconds(1))
+                {
+                    _lastSweepTime = now;
+                    foreach (TCPHandler handler1 in Handlers)
+                        if (now - handler1.lastActivity > TimeSpan.FromSeconds(900))
+                            handlersToClose.Add(handler1);
+                }
+            }
+            foreach (TCPHandler handler1 in handlersToClose)
+            {
+                logger.Debug("Closing timed out TCP connection.");
+                handler1.Close();
+            }
+
+            /*
+             * Start after we put it into Handlers set. Otherwise if it failed in handler.Start()
+             * then it will call handler.Close() before we add it into the set.
+             * Then the handler will never release until the next Handle call. Sometimes it will
+             * cause odd problems (especially during memory profiling).
+             */
+            handler.Start(fp, len);
+
+            return true;
+            // return Handle(fp, len, stream.Socket, state);
+        }
+
+        [Obsolete]
         public override bool Handle(byte[] firstPacket, int length, Socket socket, object state)
         {
             if (socket.ProtocolType != ProtocolType.Tcp
@@ -180,10 +228,10 @@ namespace Shadowsocks.Controller
         public const int RecvSize = 2048;
 
         // overhead of one chunk, reserved for AEAD ciphers
-        public const int ChunkOverheadSize = 16 * 2 /* two tags */ + AEADEncryptor.CHUNK_LEN_BYTES;
+        public const int ChunkOverheadSize = 16 * 2 /* two tags */ + AEADEncryptor.ChunkLengthBytes;
 
         // max chunk size
-        public const uint MaxChunkSize = AEADEncryptor.CHUNK_LEN_MASK + AEADEncryptor.CHUNK_LEN_BYTES + 16 * 2;
+        public const uint MaxChunkSize = AEADEncryptor.ChunkLengthMask + AEADEncryptor.ChunkLengthBytes + 16 * 2;
 
         // In general, the ciphertext length, we should take overhead into account
         public const int BufferSize = RecvSize + (int)MaxChunkSize + 32 /* max salt len */;
@@ -194,7 +242,9 @@ namespace Shadowsocks.Controller
         private readonly ProxyConfig _config;
         private readonly Socket _connection;
 
-        private IEncryptor _encryptor;
+        private IEncryptor encryptor;
+        // workaround
+        private IEncryptor decryptor;
         private Server _server;
 
         private AsyncSession _currentRemoteSession;
@@ -264,13 +314,14 @@ namespace Shadowsocks.Controller
                 throw new ArgumentException("No server configured");
             }
 
-            _encryptor = EncryptorFactory.GetEncryptor(server.method, server.password);
-
-            _server = server;
+            encryptor = EncryptorFactory.GetEncryptor(server.method, server.password);
+            decryptor = EncryptorFactory.GetEncryptor(server.method, server.password);
+            this._server = server;
 
             /* prepare address buffer length for AEAD */
-            Logger.Trace($"_addrBufLength={_addrBufLength}");
-            _encryptor.AddrBufLength = _addrBufLength;
+            Logger.Debug($"_addrBufLength={_addrBufLength}");
+            encryptor.AddressBufferLength = _addrBufLength;
+            decryptor.AddressBufferLength = _addrBufLength;
         }
 
         public void Start(byte[] firstPacket, int length)
@@ -329,14 +380,6 @@ namespace Shadowsocks.Controller
                 catch (Exception e)
                 {
                     Logger.LogUsefulException(e);
-                }
-            }
-
-            lock (_encryptionLock)
-            {
-                lock (_decryptionLock)
-                {
-                    _encryptor?.Dispose();
                 }
             }
         }
@@ -877,7 +920,7 @@ namespace Shadowsocks.Controller
                     PipeRemoteReceiveCallback, session);
 
                 TryReadAvailableData();
-                Logger.Trace($"_firstPacketLength = {_firstPacketLength}");
+                Logger.Debug($"_firstPacketLength = {_firstPacketLength}");
                 SendToServer(_firstPacketLength, session);
             }
             catch (Exception e)
@@ -908,7 +951,8 @@ namespace Shadowsocks.Controller
                     {
                         try
                         {
-                            _encryptor.Decrypt(_remoteRecvBuffer, bytesRead, _remoteSendBuffer, out bytesToSend);
+                            bytesToSend = decryptor.Decrypt(_remoteSendBuffer, _remoteRecvBuffer.AsSpan(0, bytesRead));
+                            // decryptor.Decrypt(_remoteRecvBuffer, bytesRead, _remoteSendBuffer, out bytesToSend);
                         }
                         catch (CryptoErrorException)
                         {
@@ -920,12 +964,12 @@ namespace Shadowsocks.Controller
                     if (bytesToSend == 0)
                     {
                         // need more to decrypt
-                        Logger.Trace("Need more to decrypt");
+                        Logger.Debug("Need more to decrypt");
                         session.Remote.BeginReceive(_remoteRecvBuffer, 0, RecvSize, SocketFlags.None,
                             PipeRemoteReceiveCallback, session);
                         return;
                     }
-                    Logger.Trace($"start sending {bytesToSend}");
+                    Logger.Debug($"start sending {bytesToSend}");
                     _connection.BeginSend(_remoteSendBuffer, 0, bytesToSend, SocketFlags.None,
                         PipeConnectionSendCallback, new object[] { session, bytesToSend });
                 }
@@ -981,7 +1025,8 @@ namespace Shadowsocks.Controller
             {
                 try
                 {
-                    _encryptor.Encrypt(_connetionRecvBuffer, length, _connetionSendBuffer, out bytesToSend);
+                    bytesToSend = encryptor.Encrypt(_connetionRecvBuffer.AsSpan(0, length), _connetionSendBuffer);
+                    // encryptor.Encrypt(_connetionRecvBuffer, length, _connetionSendBuffer, out bytesToSend);
                 }
                 catch (CryptoErrorException)
                 {
@@ -1010,12 +1055,6 @@ namespace Shadowsocks.Controller
                 AsyncSession session = (AsyncSession)container[0];
                 int bytesShouldSend = (int)container[1];
                 int bytesSent = session.Remote.EndSend(ar);
-
-                if (bytesSent > 0)
-                {
-                    lastActivity = DateTime.Now;
-                }
-
                 int bytesRemaining = bytesShouldSend - bytesSent;
                 if (bytesRemaining > 0)
                 {

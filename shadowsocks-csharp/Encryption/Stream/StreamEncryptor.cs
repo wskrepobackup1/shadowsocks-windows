@@ -1,180 +1,177 @@
-﻿using System;
+﻿using NLog;
+using System;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
-using Shadowsocks.Encryption.CircularBuffer;
-using Shadowsocks.Controller;
 
 namespace Shadowsocks.Encryption.Stream
 {
-    public abstract class StreamEncryptor
-        : EncryptorBase
+    public abstract class StreamEncryptor : EncryptorBase
     {
-        // for UDP only
-        protected static byte[] _udpTmpBuf = new byte[65536];
+        private static readonly Logger logger = LogManager.GetCurrentClassLogger();
 
-        // every connection should create its own buffer
-        private ByteCircularBuffer _encCircularBuffer = new ByteCircularBuffer(TCPHandler.BufferSize * 2);
-        private ByteCircularBuffer _decCircularBuffer = new ByteCircularBuffer(TCPHandler.BufferSize * 2);
-
-        protected Dictionary<string, EncryptorInfo> ciphers;
-
-        protected byte[] _encryptIV;
-        protected byte[] _decryptIV;
+        // shared by TCP decrypt UDP encrypt and decrypt
+        protected static byte[] sharedBuffer = new byte[65536];
 
         // Is first packet
-        protected bool _decryptIVReceived;
-        protected bool _encryptIVSent;
+        protected bool ivReady;
 
-        protected string _method;
-        protected int _cipher;
-        // internal name in the crypto library
-        protected string _innerLibName;
-        protected EncryptorInfo CipherInfo;
+        protected CipherFamily cipherFamily;
+        protected CipherInfo CipherInfo;
         // long-time master key
-        protected static byte[] _key = null;
+        protected static byte[] key = Array.Empty<byte>();
+        protected byte[] iv = Array.Empty<byte>();
         protected int keyLen;
         protected int ivLen;
 
         public StreamEncryptor(string method, string password)
             : base(method, password)
         {
-            InitEncryptorInfo(method);
+            CipherInfo = GetCiphers()[method.ToLower()];
+            cipherFamily = CipherInfo.Type;
+            StreamCipherParameter parameter = (StreamCipherParameter)CipherInfo.CipherParameter;
+            keyLen = parameter.KeySize;
+            ivLen = parameter.IvSize;
+
             InitKey(password);
+
+            logger.Dump($"key {instanceId}", key, keyLen);
         }
 
-        protected abstract Dictionary<string, EncryptorInfo> getCiphers();
-
-        private void InitEncryptorInfo(string method)
-        {
-            method = method.ToLower();
-            _method = method;
-            ciphers = getCiphers();
-            CipherInfo = ciphers[_method];
-            _innerLibName = CipherInfo.InnerLibName;
-            _cipher = CipherInfo.Type;
-            if (_cipher == 0) {
-                throw new System.Exception("method not found");
-            }
-            keyLen = CipherInfo.KeySize;
-            ivLen = CipherInfo.IvSize;
-        }
+        protected abstract Dictionary<string, CipherInfo> GetCiphers();
 
         private void InitKey(string password)
         {
             byte[] passbuf = Encoding.UTF8.GetBytes(password);
-            if (_key == null) _key = new byte[keyLen];
-            if (_key.Length != keyLen) Array.Resize(ref _key, keyLen);
-            LegacyDeriveKey(passbuf, _key, keyLen);
+            key ??= new byte[keyLen];
+            if (key.Length != keyLen)
+            {
+                Array.Resize(ref key, keyLen);
+            }
+
+            LegacyDeriveKey(passbuf, key, keyLen);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void LegacyDeriveKey(byte[] password, byte[] key, int keylen)
         {
-            byte[] result = new byte[password.Length + MD5_LEN];
+            byte[] result = new byte[password.Length + MD5Length];
             int i = 0;
-            byte[] md5sum = null;
-            while (i < keylen) {
-                if (i == 0) {
-                    md5sum = MbedTLS.MD5(password);
-                } else {
-                    Array.Copy(md5sum, 0, result, 0, MD5_LEN);
-                    Array.Copy(password, 0, result, MD5_LEN, password.Length);
-                    md5sum = MbedTLS.MD5(result);
+            byte[] md5sum = Array.Empty<byte>();
+            while (i < keylen)
+            {
+                if (i == 0)
+                {
+                    md5sum = CryptoUtils.MD5(password);
                 }
-                Array.Copy(md5sum, 0, key, i, Math.Min(MD5_LEN, keylen - i));
-                i += MD5_LEN;
+                else
+                {
+                    Array.Copy(md5sum, 0, result, 0, MD5Length);
+                    Array.Copy(password, 0, result, MD5Length, password.Length);
+                    md5sum = CryptoUtils.MD5(result);
+                }
+                Array.Copy(md5sum, 0, key, i, Math.Min(MD5Length, keylen - i));
+                i += MD5Length;
             }
         }
 
-        protected virtual void initCipher(byte[] iv, bool isEncrypt)
+        protected virtual void InitCipher(byte[] iv, bool isEncrypt)
         {
-            if (isEncrypt) {
-                _encryptIV = new byte[ivLen];
-                Array.Copy(iv, _encryptIV, ivLen);
-            } else {
-                _decryptIV = new byte[ivLen];
-                Array.Copy(iv, _decryptIV, ivLen);
+            if (ivLen == 0)
+            {
+                return;
             }
+
+            this.iv = new byte[ivLen];
+            Array.Copy(iv, this.iv, ivLen);
         }
 
-        protected abstract void cipherUpdate(bool isEncrypt, int length, byte[] buf, byte[] outbuf);
-
-        protected static void randBytes(byte[] buf, int length) { RNG.GetBytes(buf, length); }
+        protected abstract int CipherEncrypt(ReadOnlySpan<byte> plain, Span<byte> cipher);
+        protected abstract int CipherDecrypt(Span<byte> plain, ReadOnlySpan<byte> cipher);
 
         #region TCP
-
-        public override void Encrypt(byte[] buf, int length, byte[] outbuf, out int outlength)
+        [MethodImpl(MethodImplOptions.Synchronized | MethodImplOptions.AggressiveOptimization)]
+        public override int Encrypt(ReadOnlySpan<byte> plain, Span<byte> cipher)
         {
             int cipherOffset = 0;
-            Debug.Assert(_encCircularBuffer != null, "_encCircularBuffer != null");
-            _encCircularBuffer.Put(buf, 0, length);
-            if (! _encryptIVSent) {
+            logger.Trace($"{instanceId} encrypt TCP, generate iv: {!ivReady}");
+            if (!ivReady)
+            {
                 // Generate IV
-                byte[] ivBytes = new byte[ivLen];
-                randBytes(ivBytes, ivLen);
-                initCipher(ivBytes, true);
-                
-                Array.Copy(ivBytes, 0, outbuf, 0, ivLen);
+                byte[] ivBytes = RNG.GetBytes(ivLen);
+                InitCipher(ivBytes, true);
+                ivBytes.CopyTo(cipher);
                 cipherOffset = ivLen;
-                _encryptIVSent = true;
+                cipher = cipher.Slice(cipherOffset);
+                ivReady = true;
             }
-            int size = _encCircularBuffer.Size;
-            byte[] plain = _encCircularBuffer.Get(size);
-            byte[] cipher = new byte[size];
-            cipherUpdate(true, size, plain, cipher);
-            Buffer.BlockCopy(cipher, 0, outbuf, cipherOffset, size);
-            outlength = size + cipherOffset;
+            int clen = CipherEncrypt(plain, cipher);
+
+            logger.DumpBase64($"plain {instanceId}", plain);
+            logger.DumpBase64($"cipher {instanceId}", cipher.Slice(0, clen));
+            logger.Dump($"iv {instanceId}", iv, ivLen);
+            return clen + cipherOffset;
         }
 
-        public override void Decrypt(byte[] buf, int length, byte[] outbuf, out int outlength)
+        private int recieveCtr = 0;
+        [MethodImpl(MethodImplOptions.Synchronized | MethodImplOptions.AggressiveOptimization)]
+        public override int Decrypt(Span<byte> plain, ReadOnlySpan<byte> cipher)
         {
-            Debug.Assert(_decCircularBuffer != null, "_circularBuffer != null");
-            _decCircularBuffer.Put(buf, 0, length);
-            if (! _decryptIVReceived) {
-                if (_decCircularBuffer.Size <= ivLen) {
-                    // we need more data
-                    outlength = 0;
-                    return;
+            logger.Trace($"{instanceId} decrypt TCP, read iv: {!ivReady}");
+
+            int cipherOffset = 0;
+            // is first packet, need read iv
+            if (!ivReady)
+            {
+                // push to buffer in case of not enough data
+                cipher.CopyTo(sharedBuffer.AsSpan(recieveCtr));
+                recieveCtr += cipher.Length;
+
+                // not enough data for read iv, return 0 byte data
+                if (recieveCtr <= ivLen)
+                {
+                    return 0;
                 }
                 // start decryption
-                _decryptIVReceived = true;
-                byte[] iv = _decCircularBuffer.Get(ivLen);
-                initCipher(iv, false);
+                ivReady = true;
+                if (ivLen > 0)
+                {
+                    // read iv
+                    byte[] iv = sharedBuffer.AsSpan(0, ivLen).ToArray();
+                    InitCipher(iv, false);
+                }
+                else
+                {
+                    InitCipher(Array.Empty<byte>(), false);
+                }
+                cipherOffset += ivLen;
             }
-            byte[] cipher = _decCircularBuffer.ToArray();
-            cipherUpdate(false, cipher.Length, cipher, outbuf);
-            // move pointer only
-            _decCircularBuffer.Skip(_decCircularBuffer.Size);
-            outlength = cipher.Length;
-            // done the decryption
+
+            // read all data from buffer
+            int len = CipherDecrypt(plain, cipher.Slice(cipherOffset));
+            logger.DumpBase64($"cipher {instanceId}", cipher.Slice(cipherOffset));
+            logger.DumpBase64($"plain {instanceId}", plain.Slice(0, len));
+            logger.Dump($"iv {instanceId}", iv, ivLen);
+            return len;
         }
 
         #endregion
 
         #region UDP
-
-        public override void EncryptUDP(byte[] buf, int length, byte[] outbuf, out int outlength)
+        [MethodImpl(MethodImplOptions.Synchronized | MethodImplOptions.AggressiveOptimization)]
+        public override int EncryptUDP(ReadOnlySpan<byte> plain, Span<byte> cipher)
         {
-            // Generate IV
-            randBytes(outbuf, ivLen);
-            initCipher(outbuf, true);
-            lock (_udpTmpBuf) {
-                cipherUpdate(true, length, buf, _udpTmpBuf);
-                outlength = length + ivLen;
-                Buffer.BlockCopy(_udpTmpBuf, 0, outbuf, ivLen, length);
-            }
+            byte[] iv = RNG.GetBytes(ivLen);
+            iv.CopyTo(cipher);
+            InitCipher(iv, true);
+            return ivLen + CipherEncrypt(plain, cipher.Slice(ivLen));
         }
 
-        public override void DecryptUDP(byte[] buf, int length, byte[] outbuf, out int outlength)
+        [MethodImpl(MethodImplOptions.Synchronized | MethodImplOptions.AggressiveOptimization)]
+        public override int DecryptUDP(Span<byte> plain, ReadOnlySpan<byte> cipher)
         {
-            // Get IV from first pos
-            initCipher(buf, false);
-            outlength = length - ivLen;
-            lock (_udpTmpBuf) {
-                // C# could be multi-threaded
-                Buffer.BlockCopy(buf, ivLen, _udpTmpBuf, 0, length - ivLen);
-                cipherUpdate(false, length - ivLen, _udpTmpBuf, outbuf);
-            }
+            InitCipher(cipher.Slice(0, ivLen).ToArray(), false);
+            return CipherDecrypt(plain, cipher.Slice(ivLen));
         }
 
         #endregion

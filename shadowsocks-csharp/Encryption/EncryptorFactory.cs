@@ -9,60 +9,63 @@ namespace Shadowsocks.Encryption
 {
     public static class EncryptorFactory
     {
-        private static Dictionary<string, Type> _registeredEncryptors = new Dictionary<string, Type>();
+        public static string DefaultCipher = "chacha20-ietf-poly1305";
 
-        private static readonly Type[] ConstructorTypes = {typeof(string), typeof(string)};
+        private static readonly Dictionary<string, Type> _registeredEncryptors = new Dictionary<string, Type>();
+        private static readonly Dictionary<string, CipherInfo> ciphers = new Dictionary<string, CipherInfo>();
+        private static readonly Type[] ConstructorTypes = { typeof(string), typeof(string) };
 
         static EncryptorFactory()
         {
-            var AEADMbedTLSEncryptorSupportedCiphers = AEADMbedTLSEncryptor.SupportedCiphers();
-            var AEADSodiumEncryptorSupportedCiphers = AEADSodiumEncryptor.SupportedCiphers();
-            if (Sodium.AES256GCMAvailable)
+            foreach (var method in StreamPlainNativeEncryptor.SupportedCiphers())
             {
-                // prefer to aes-256-gcm in libsodium
-                AEADMbedTLSEncryptorSupportedCiphers.Remove("aes-256-gcm");
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(StreamPlainNativeEncryptor));
+                }
             }
-            else
+            foreach (var method in StreamRc4NativeEncryptor.SupportedCiphers())
             {
-                AEADSodiumEncryptorSupportedCiphers.Remove("aes-256-gcm");
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(StreamRc4NativeEncryptor));
+                }
             }
-
-            // XXX: sequence matters, OpenSSL > Sodium > MbedTLS
-            foreach (string method in StreamOpenSSLEncryptor.SupportedCiphers())
+            foreach (var method in StreamAesCfbBouncyCastleEncryptor.SupportedCiphers())
             {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(StreamOpenSSLEncryptor));
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(StreamAesCfbBouncyCastleEncryptor));
+                }
             }
-
-            foreach (string method in StreamSodiumEncryptor.SupportedCiphers())
+            foreach (var method in StreamChachaNaClEncryptor.SupportedCiphers())
             {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(StreamSodiumEncryptor));
-            }
-
-            foreach (string method in StreamMbedTLSEncryptor.SupportedCiphers())
-            {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(StreamMbedTLSEncryptor));
-            }
-
-
-            foreach (string method in AEADOpenSSLEncryptor.SupportedCiphers())
-            {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(AEADOpenSSLEncryptor));
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(StreamChachaNaClEncryptor));
+                }
             }
 
-            foreach (string method in AEADSodiumEncryptorSupportedCiphers)
-            {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(AEADSodiumEncryptor));
-            }
 
-            foreach (string method in AEADMbedTLSEncryptorSupportedCiphers)
+            foreach (var method in AEADAesGcmNativeEncryptor.SupportedCiphers())
             {
-                if (!_registeredEncryptors.ContainsKey(method))
-                    _registeredEncryptors.Add(method, typeof(AEADMbedTLSEncryptor));
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(AEADAesGcmNativeEncryptor));
+                }
+            }
+            foreach (var method in AEADNaClEncryptor.SupportedCiphers())
+            {
+                if (!_registeredEncryptors.ContainsKey(method.Key))
+                {
+                    ciphers.Add(method.Key, method.Value);
+                    _registeredEncryptors.Add(method.Key, typeof(AEADNaClEncryptor));
+                }
             }
         }
 
@@ -74,11 +77,16 @@ namespace Shadowsocks.Encryption
             }
 
             method = method.ToLowerInvariant();
-            Type t = _registeredEncryptors[method];
+            bool ok = _registeredEncryptors.TryGetValue(method, out Type? t);
+            if (!ok)
+            {
+                t = _registeredEncryptors[DefaultCipher];
+            }
 
-            ConstructorInfo c = t.GetConstructor(ConstructorTypes);
+            ConstructorInfo c = t?.GetConstructor(ConstructorTypes) ??
+                throw new TypeLoadException("can't load constructor");
             if (c == null) throw new System.Exception("Invalid ctor");
-            IEncryptor result = (IEncryptor) c.Invoke(new object[] {method, password});
+            IEncryptor result = (IEncryptor)c.Invoke(new object[] { method, password });
             return result;
         }
 
@@ -86,15 +94,26 @@ namespace Shadowsocks.Encryption
         {
             var sb = new StringBuilder();
             sb.Append(Environment.NewLine);
-            sb.AppendLine("=========================");
+            sb.AppendLine("-------------------------");
             sb.AppendLine("Registered Encryptor Info");
             foreach (var encryptor in _registeredEncryptors)
             {
-                sb.AppendLine(String.Format("{0}=>{1}", encryptor.Key, encryptor.Value.Name));
+                sb.AppendLine($"{ciphers[encryptor.Key].ToString(true)} => {encryptor.Value.Name}");
             }
-
-            sb.AppendLine("=========================");
+            // use ----- instead of =======, so when user paste it to Github, it won't became title
+            sb.AppendLine("-------------------------");
             return sb.ToString();
+        }
+
+        public static CipherInfo GetCipherInfo(string name)
+        {
+            // TODO: Replace cipher when required not exist
+            return ciphers[name];
+        }
+
+        public static IEnumerable<CipherInfo> ListAvaliableCiphers()
+        {
+            return ciphers.Values;
         }
     }
 }

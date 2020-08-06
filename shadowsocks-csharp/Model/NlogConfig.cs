@@ -20,8 +20,18 @@ namespace Shadowsocks.Model
             Debug,
             Trace,
         }
-
-        const string NLOG_CONFIG_FILE_NAME = "NLog.config";
+        private static string _NLOG_CONFIG_FILE_NAME=string.Empty;
+        public static string NLOG_CONFIG_FILE_NAME
+        {
+            get
+            {
+                if (_NLOG_CONFIG_FILE_NAME.IsNullOrEmpty())
+                {
+                    _NLOG_CONFIG_FILE_NAME = Path.Combine(Environment.CurrentDirectory, "NLog.config");
+                }
+                return _NLOG_CONFIG_FILE_NAME;
+            }
+        }
         const string TARGET_MIN_LEVEL_ATTRIBUTE = "minlevel";
         const string LOGGER_FILE_NAME_ATTRIBUTE = "fileName";
 
@@ -108,20 +118,12 @@ namespace Shadowsocks.Model
         /// </summary>
         public static void TouchAndApplyNLogConfig()
         {
-            try
+      
+            if (!File.Exists(NLOG_CONFIG_FILE_NAME))
             {
-                if (File.Exists(NLOG_CONFIG_FILE_NAME))
-                    return; // NLog.config exists, and has already been loaded
-
                 File.WriteAllText(NLOG_CONFIG_FILE_NAME, Properties.Resources.NLog_config);
+                LogManager.LoadConfiguration(NLOG_CONFIG_FILE_NAME);
             }
-            catch (Exception ex)
-            {
-                NLog.Common.InternalLogger.Error(ex, "[shadowsocks] Failed to setup default NLog.config: {0}", NLOG_CONFIG_FILE_NAME);
-                return;
-            }
-
-            LoadConfiguration();    // Load the new config-file
         }
 
         /// <summary>

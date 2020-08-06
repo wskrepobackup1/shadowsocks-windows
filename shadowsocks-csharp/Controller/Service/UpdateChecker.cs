@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Reflection;
 using System.Text.RegularExpressions;
 
 using Newtonsoft.Json.Linq;
@@ -26,7 +27,7 @@ namespace Shadowsocks.Controller
         public string LatestVersionLocalName;
         public event EventHandler CheckUpdateCompleted;
 
-        public const string Version = "4.1.10.0";
+        public static readonly string Version = Assembly.GetEntryAssembly().GetName().Version.ToString();
 
         private class CheckUpdateTimer : System.Timers.Timer
         {
@@ -39,6 +40,10 @@ namespace Shadowsocks.Controller
 
         public void CheckUpdate(Configuration config, int delay)
         {
+#if DEBUG
+            return;
+#pragma warning disable CS0162 // 检测到无法访问的代码
+#endif
             CheckUpdateTimer timer = new CheckUpdateTimer(delay);
             timer.AutoReset = false;
             timer.Elapsed += Timer_Elapsed;
@@ -58,6 +63,10 @@ namespace Shadowsocks.Controller
 
         public void CheckUpdate(Configuration config)
         {
+#if DEBUG
+            return;
+#endif
+
             this.config = config;
 
             try

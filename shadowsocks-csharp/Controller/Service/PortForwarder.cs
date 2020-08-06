@@ -6,7 +6,7 @@ using Shadowsocks.Util.Sockets;
 
 namespace Shadowsocks.Controller
 {
-    class PortForwarder : Listener.Service
+    class PortForwarder : StreamService
     {
         private readonly int _targetPort;
 
@@ -15,6 +15,20 @@ namespace Shadowsocks.Controller
             _targetPort = targetPort;
         }
 
+        public override bool Handle(CachedNetworkStream stream, object state)
+        {
+            byte[] fp = new byte[256];
+            int len = stream.ReadFirstBlock(fp);
+
+            if (stream.Socket.ProtocolType != ProtocolType.Tcp)
+            {
+                return false;
+            }
+            new Handler().Start(fp, len, stream.Socket, _targetPort);
+            return true;
+        }
+
+        [Obsolete]
         public override bool Handle(byte[] firstPacket, int length, Socket socket, object state)
         {
             if (socket.ProtocolType != ProtocolType.Tcp)

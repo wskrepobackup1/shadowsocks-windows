@@ -1,67 +1,13 @@
-﻿namespace Shadowsocks.Encryption
+﻿using System;
+using System.Runtime.CompilerServices;
+
+namespace Shadowsocks.Encryption
 {
-    public class EncryptorInfo
+    public abstract class EncryptorBase : IEncryptor
     {
-        public int KeySize;
-        public int IvSize;
-        public int SaltSize;
-        public int TagSize;
-        public int NonceSize;
-        public int Type;
-        public string InnerLibName;
+        private static int _currentId = 0;
 
-        // For those who make use of internal crypto method name
-        // e.g. mbed TLS
-
-        #region Stream ciphers
-
-        public EncryptorInfo(string innerLibName, int keySize, int ivSize, int type)
-        {
-            this.KeySize = keySize;
-            this.IvSize = ivSize;
-            this.Type = type;
-            this.InnerLibName = innerLibName;
-        }
-
-        public EncryptorInfo(int keySize, int ivSize, int type)
-        {
-            this.KeySize = keySize;
-            this.IvSize = ivSize;
-            this.Type = type;
-            this.InnerLibName = string.Empty;
-        }
-
-        #endregion
-
-        #region AEAD ciphers
-
-        public EncryptorInfo(string innerLibName, int keySize, int saltSize, int nonceSize, int tagSize, int type)
-        {
-            this.KeySize = keySize;
-            this.SaltSize = saltSize;
-            this.NonceSize = nonceSize;
-            this.TagSize = tagSize;
-            this.Type = type;
-            this.InnerLibName = innerLibName;
-        }
-
-        public EncryptorInfo(int keySize, int saltSize, int nonceSize, int tagSize, int type)
-        {
-            this.KeySize = keySize;
-            this.SaltSize = saltSize;
-            this.NonceSize = nonceSize;
-            this.TagSize = tagSize;
-            this.Type = type;
-            this.InnerLibName = string.Empty;
-        }
-
-        #endregion
-    }
-
-    public abstract class EncryptorBase
-        : IEncryptor
-    {
-        public const int MAX_INPUT_SIZE = 32768;
+        public const int MaxInputSize = 32768;
 
         public const int MAX_DOMAIN_LEN = 255;
         public const int ADDR_PORT_LEN = 2;
@@ -71,10 +17,16 @@
         public const int ATYP_DOMAIN = 0x03;
         public const int ATYP_IPv6 = 0x04;
 
-        public const int MD5_LEN = 16;
+        public const int MD5Length = 16;
+
+        // for debugging only, give it a number to trace data stream
+        public readonly int instanceId;
 
         protected EncryptorBase(string method, string password)
         {
+            instanceId = _currentId;
+            _currentId++;
+
             Method = method;
             Password = password;
         }
@@ -82,16 +34,16 @@
         protected string Method;
         protected string Password;
 
-        public abstract void Encrypt(byte[] buf, int length, byte[] outbuf, out int outlength);
+        public override string ToString()
+        {
+            return $"{instanceId}({Method},{Password})";
+        }
 
-        public abstract void Decrypt(byte[] buf, int length, byte[] outbuf, out int outlength);
+        public abstract int Encrypt(ReadOnlySpan<byte> plain, Span<byte> cipher);
+        public abstract int Decrypt(Span<byte> plain, ReadOnlySpan<byte> cipher);
+        public abstract int EncryptUDP(ReadOnlySpan<byte> plain, Span<byte> cipher);
+        public abstract int DecryptUDP(Span<byte> plain, ReadOnlySpan<byte> cipher);
 
-        public abstract void EncryptUDP(byte[] buf, int length, byte[] outbuf, out int outlength);
-
-        public abstract void DecryptUDP(byte[] buf, int length, byte[] outbuf, out int outlength);
-
-        public abstract void Dispose();
-
-        public int AddrBufLength { get; set; } = - 1;
+        public int AddressBufferLength { get; set; } = -1;
     }
 }

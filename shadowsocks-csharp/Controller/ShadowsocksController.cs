@@ -26,10 +26,10 @@ namespace Shadowsocks.Controller
         // manipulates UI
         // interacts with low level logic
 
-        private Thread _ramThread;
         private Thread _trafficThread;
 
-        private Listener _listener;
+        private TCPListener _tcpListener;
+        private UDPListener _udpListener;
         private PACDaemon _pacDaemon;
         private PACServer _pacServer;
         private Configuration _config;
@@ -94,7 +94,6 @@ namespace Shadowsocks.Controller
             StatisticsConfiguration = StatisticsStrategyConfiguration.Load();
             _strategyManager = new StrategyManager(this);
             _pluginsByServer = new ConcurrentDictionary<Server, Sip003Plugin>();
-            StartReleasingMemory();
             StartTrafficStatistics(61);
 
             ProgramUpdated += (o, e) =>
@@ -330,10 +329,8 @@ namespace Shadowsocks.Controller
                 return;
             }
             stopped = true;
-            if (_listener != null)
-            {
-                _listener.Stop();
-            }
+            _tcpListener?.Stop();
+            _udpListener?.Stop();
             StopPlugins();
             if (privoxyRunner != null)
             {
@@ -343,7 +340,6 @@ namespace Shadowsocks.Controller
             {
                 SystemProxy.Update(_config, true, null);
             }
-            Encryption.RNG.Close();
         }
 
         private void StopPlugins()
@@ -492,7 +488,8 @@ namespace Shadowsocks.Controller
             GeositeUpdater.Error += PacServer_PACUpdateError;
 
             availabilityStatistics.UpdateConfiguration(this);
-            _listener?.Stop();
+            _tcpListener?.Stop();
+            _udpListener?.Stop();
             StopPlugins();
 
             // don't put PrivoxyRunner.Start() before pacServer.Stop()
@@ -515,15 +512,18 @@ namespace Shadowsocks.Controller
                 tcpRelay.OnFailed += (o, e) => GetCurrentStrategy()?.SetFailure(e.server);
 
                 UDPRelay udpRelay = new UDPRelay(this);
-                List<Listener.IService> services = new List<Listener.IService>
+                _tcpListener = new TCPListener(_config, new List<IStreamService>
                 {
                     tcpRelay,
-                    udpRelay,
                     _pacServer,
-                    new PortForwarder(privoxyRunner.RunningPort)
-                };
-                _listener = new Listener(services);
-                _listener.Start(_config);
+                    new PortForwarder(privoxyRunner.RunningPort),
+                });
+                _tcpListener.Start();
+                _udpListener = new UDPListener(_config, new List<IDatagramService>
+                {
+                    udpRelay,
+                });
+                _udpListener.Start();
             }
             catch (Exception e)
             {
@@ -546,7 +546,6 @@ namespace Shadowsocks.Controller
 
             ConfigChanged?.Invoke(this, new EventArgs());
             UpdateSystemProxy();
-            Utils.ReleaseMemory(true);
         }
 
         private void StartPlugin()
@@ -592,28 +591,6 @@ namespace Shadowsocks.Controller
         {
             Clipboard.SetDataObject(_pacServer.PacUrl);
         }
-
-        #region Memory Management
-
-        private void StartReleasingMemory()
-        {
-            _ramThread = new Thread(new ThreadStart(ReleaseMemory))
-            {
-                IsBackground = true
-            };
-            _ramThread.Start();
-        }
-
-        private void ReleaseMemory()
-        {
-            while (true)
-            {
-                Utils.ReleaseMemory(false);
-                Thread.Sleep(30 * 1000);
-            }
-        }
-
-        #endregion
 
         #region Traffic Statistics
 
